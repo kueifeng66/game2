@@ -32,13 +32,26 @@
     }
 
     init() {
-      if (!this.ctx) {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        this.ctx = new AudioContext();
-      }
-      if (this.ctx.state === 'suspended') {
-        this.ctx.resume();
-      }
+      try {
+        if (!this.ctx) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (AudioContext) {
+            this.ctx = new AudioContext();
+          }
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+          this.ctx.resume().catch(() => {});
+        }
+        // iOS Safari Audio Unlock: play a silent 1-sample buffer on user gesture
+        if (this.ctx && !this.unlocked) {
+          const buffer = this.ctx.createBuffer(1, 1, 22050);
+          const source = this.ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(this.ctx.destination);
+          source.start(0);
+          this.unlocked = true;
+        }
+      } catch (e) {}
     }
 
     playBark(pitch = 1.0) {
@@ -287,13 +300,18 @@
       this.ctx = this.canvas.getContext('2d');
       this.sound = new SoundSystem();
 
-      // View & Scaling
+      // View & Scaling (Auto-detecting screen)
       this.width = window.innerWidth;
       this.height = window.innerHeight;
       this.dpr = window.devicePixelRatio || 1;
+      this.baseScale = 1.0;
+      this.speedScale = 1.0;
+      this.isPortrait = false;
+      this.isTouch = false;
+      this.effectiveGrabDist = 52;
 
       // Game Clock & Time (10 minutes = 600s)
-      this.TOTAL_TIME = 600;
+      this.TOTAL_TIME = 300;
       this.timeRemaining = this.TOTAL_TIME;
       this.timeElapsed = 0;
       this.gameSpeed = 1;
@@ -386,28 +404,87 @@
     }
 
     resize() {
-      this.width = window.innerWidth;
-      this.height = window.innerHeight;
-      this.dpr = window.devicePixelRatio || 1;
+      // 1. Auto-detect screen & viewport metrics
+      const vv = window.visualViewport;
+      this.width = vv ? Math.round(vv.width) : window.innerWidth;
+      this.height = vv ? Math.round(vv.height) : window.innerHeight;
+      this.isPortrait = this.height > this.width;
+      this.isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
-      this.canvas.width = this.width * this.dpr;
-      this.canvas.height = this.height * this.dpr;
+      // 2. Compute dynamic baseScale for optimal visibility and proportion on any screen
+      if (this.isPortrait) {
+        // Mobile phone / tall tablet portrait
+        this.baseScale = Math.max(0.72, Math.min(1.15, this.width / 410));
+      } else {
+        // Desktop / landscape tablet
+        this.baseScale = Math.max(0.85, Math.min(1.35, Math.min(this.width / 960, this.height / 600)));
+      }
+
+      // 3. Normalized speed scale: ensures reaction time from cage to children is balanced on all screen sizes
+      const minDim = Math.min(this.width, this.height);
+      this.speedScale = Math.max(0.60, Math.min(1.25, minDim / 520));
+
+      // 4. Effective touch grab distance
+      this.effectiveGrabDist = (this.isTouch ? 68 : 50) * this.baseScale;
+
+      // 5. Cap DPR to 2 on mobile/retina to prevent memory crashes on iOS Safari
+      this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      this.canvas.width = Math.round(this.width * this.dpr);
+      this.canvas.height = Math.round(this.height * this.dpr);
+
+      // Reset transform then apply scale
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
       this.ctx.scale(this.dpr, this.dpr);
 
-      // Reposition Central Cage
-      this.cage.x = this.width / 2;
-      this.cage.y = this.height / 2;
-      this.cage.radius = Math.min(130, Math.min(this.width, this.height) * 0.16);
+      // 6. Dynamic Park Layout (Adapts to Portrait vs. Landscape for best play effect)
+      if (this.isPortrait) {
+        // Mobile Portrait: Vertical flow
+        this.cage.x = this.width / 2;
+        this.cage.y = this.height * 0.46;
+        this.cage.radius = Math.min(this.width * 0.23, this.height * 0.14, 96);
 
-      // Reposition Pond and Playground
-      this.pond.x = this.width * 0.18;
-      this.pond.y = this.height * 0.78;
-      this.pond.radius = Math.min(100, Math.min(this.width, this.height) * 0.14);
+        // Duck Pond placed in bottom meadow
+        this.pond.x = this.width * 0.26;
+        this.pond.y = this.height * 0.84;
+        this.pond.radius = Math.min(this.width * 0.18, 70);
 
-      this.playground.x = this.width * 0.82;
-      this.playground.y = this.height * 0.22;
+        // Playground placed in top meadow
+        this.playground.x = this.width * 0.74;
+        this.playground.y = this.height * 0.16;
+      } else {
+        // Landscape / Desktop: Panoramic flow
+        this.cage.x = this.width / 2;
+        this.cage.y = this.height / 2;
+        this.cage.radius = Math.min(this.width * 0.15, this.height * 0.22, 120);
+
+        // Pond on left
+        this.pond.x = this.width * 0.16;
+        this.pond.y = this.height * 0.78;
+        this.pond.radius = Math.min(this.width * 0.12, 85);
+
+        // Playground on right
+        this.playground.x = this.width * 0.84;
+        this.playground.y = this.height * 0.22;
+      }
 
       this.rebuildPosts();
+
+      // Clamp children and dogs within visible screen bounds
+      if (this.children && this.children.length > 0) {
+        for (const child of this.children) {
+          child.x = Math.max(30, Math.min(this.width - 30, child.x));
+          child.y = Math.max(30, Math.min(this.height - 30, child.y));
+        }
+      }
+      if (this.dogs && this.dogs.length > 0) {
+        for (const dog of this.dogs) {
+          if (dog.state === 'CHARGING') {
+            dog.x = Math.max(20, Math.min(this.width - 20, dog.x));
+            dog.y = Math.max(20, Math.min(this.height - 20, dog.y));
+          }
+        }
+      }
     }
 
     rebuildPosts() {
@@ -540,16 +617,35 @@
     }
 
     setupEvents() {
+      // Screen resizing & orientation change listeners for iPhone & mobile
       window.addEventListener('resize', () => this.resize());
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => this.resize());
+      }
+      window.addEventListener('orientationchange', () => {
+        setTimeout(() => this.resize(), 120);
+      });
 
-      // Mouse and Touch Interaction
+      // Unified Pointer & Touch coordinate resolver
       const getPos = (e) => {
         const rect = this.canvas.getBoundingClientRect();
-        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        let clientX = e.clientX;
+        let clientY = e.clientY;
+
+        if (clientX === undefined && e.touches && e.touches.length > 0) {
+          clientX = e.touches[0].clientX;
+          clientY = e.touches[0].clientY;
+        } else if (clientX === undefined && e.changedTouches && e.changedTouches.length > 0) {
+          clientX = e.changedTouches[0].clientX;
+          clientY = e.changedTouches[0].clientY;
+        }
+
+        const isTouch = e.pointerType === 'touch' || Boolean(e.touches || e.changedTouches);
+
         return {
-          x: clientX - rect.left,
-          y: clientY - rect.top
+          x: (clientX !== undefined ? clientX : this.mouse.x) - rect.left,
+          y: (clientY !== undefined ? clientY : this.mouse.y) - rect.top,
+          isTouch
         };
       };
 
@@ -557,22 +653,28 @@
         const pos = getPos(e);
         this.mouse.x = pos.x;
         this.mouse.y = pos.y;
+        this.mouse.isTouch = pos.isTouch;
       };
 
       const handlePointerDown = (e) => {
+        // Prevent default touch gestures (pinch-zoom, bounce, pull-to-refresh)
+        if (e.cancelable && (e.pointerType === 'touch' || e.touches)) {
+          e.preventDefault();
+        }
+
         this.sound.init();
         const pos = getPos(e);
         this.mouse.x = pos.x;
         this.mouse.y = pos.y;
         this.mouse.isDown = true;
+        this.mouse.isTouch = pos.isTouch;
 
         if (this.state !== 'PLAYING') return;
 
-        // Try to grab a dog!
-        // STRICT RULE: When dogs do not break through the cage, the hand CANNOT move them.
-        // ONLY dogs that have broken through the cage (CHARGING) can be seized!
+        // Responsive grab radius adapted to touchscreens (iPhone) & screen scale
+        const grabRadius = this.effectiveGrabDist || (pos.isTouch ? 68 : 52);
         let bestTarget = null;
-        let bestDist = 52; // Grab radius
+        let bestDist = grabRadius;
 
         for (const dog of this.dogs) {
           if (dog.state === 'CHARGING') {
@@ -591,8 +693,8 @@
           for (const dog of this.dogs) {
             if (dog.state === 'TETHERED') {
               const d = Math.hypot(dog.x - this.mouse.x, dog.y - this.mouse.y);
-              if (d < 45) {
-                this.addFloatingText('Cannot move! Still tied in cage! 🔒', dog.x, dog.y - 20, '#ffb300');
+              if (d < 46 * (this.baseScale || 1)) {
+                this.addFloatingText('Cannot move! Still tied in cage! 🔒', dog.x, dog.y - 20 * (this.baseScale || 1), '#ffb300');
                 break;
               }
             }
@@ -600,29 +702,68 @@
         }
       };
 
-      const handlePointerUp = () => {
+      const handlePointerUp = (e) => {
         this.mouse.isDown = false;
         if (this.mouse.grabTarget) {
           this.releaseDog(this.mouse.grabTarget);
         }
       };
 
-      window.addEventListener('mousemove', handlePointerMove);
-      window.addEventListener('mousedown', handlePointerDown);
-      window.addEventListener('mouseup', handlePointerUp);
+      // Pointer Events: modern standard supported across iOS Safari 13+ and Desktop
+      if (window.PointerEvent) {
+        this.canvas.addEventListener('pointerdown', (e) => {
+          handlePointerDown(e);
+          try {
+            this.canvas.setPointerCapture(e.pointerId);
+          } catch (err) {}
+        }, { passive: false });
 
-      window.addEventListener('touchmove', handlePointerMove, { passive: true });
-      window.addEventListener('touchstart', handlePointerDown, { passive: true });
-      window.addEventListener('touchend', handlePointerUp);
+        this.canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
 
-      // UI Button Handlers
-      this.ui.startBtn.addEventListener('click', () => this.startGame());
-      this.ui.resumeBtn.addEventListener('click', () => this.resumeGame());
-      this.ui.pauseBtn.addEventListener('click', () => this.togglePause());
-      this.ui.retryBtn.addEventListener('click', () => this.restartGame());
-      this.ui.playAgainBtn.addEventListener('click', () => this.restartGame());
+        this.canvas.addEventListener('pointerup', (e) => {
+          handlePointerUp(e);
+          try {
+            this.canvas.releasePointerCapture(e.pointerId);
+          } catch (err) {}
+        });
 
-      this.ui.soundBtn.addEventListener('click', () => {
+        this.canvas.addEventListener('pointercancel', (e) => {
+          handlePointerUp(e);
+          try {
+            this.canvas.releasePointerCapture(e.pointerId);
+          } catch (err) {}
+        });
+      } else {
+        // Fallback for older browsers
+        this.canvas.addEventListener('mousedown', handlePointerDown);
+        window.addEventListener('mousemove', handlePointerMove);
+        window.addEventListener('mouseup', handlePointerUp);
+
+        this.canvas.addEventListener('touchstart', handlePointerDown, { passive: false });
+        this.canvas.addEventListener('touchmove', handlePointerMove, { passive: false });
+        this.canvas.addEventListener('touchend', handlePointerUp);
+        this.canvas.addEventListener('touchcancel', handlePointerUp);
+      }
+
+      // Safe UI Button Handlers (Responsive on iOS touch & click)
+      const bindBtn = (btn, action) => {
+        if (!btn) return;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          action();
+        });
+        btn.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+        });
+      };
+
+      bindBtn(this.ui.startBtn, () => this.startGame());
+      bindBtn(this.ui.resumeBtn, () => this.resumeGame());
+      bindBtn(this.ui.pauseBtn, () => this.togglePause());
+      bindBtn(this.ui.retryBtn, () => this.restartGame());
+      bindBtn(this.ui.playAgainBtn, () => this.restartGame());
+
+      bindBtn(this.ui.soundBtn, () => {
         this.sound.init();
         this.sound.muted = !this.sound.muted;
         this.ui.soundBtn.innerHTML = this.sound.muted ? '🔇 Sound: Off' : '🔊 Sound: On';
@@ -877,7 +1018,9 @@
 
       // 2. Hand Position Lerp
       this.hand.targetX = this.mouse.x;
-      this.hand.targetY = this.mouse.y;
+      // On mobile touchscreens while grabbing, offset target slightly upward (-32px) so the player's finger doesn't block their view of the carried dog
+      const touchOffsetY = (this.mouse.isTouch && this.hand.isGrabbing) ? -32 : 0;
+      this.hand.targetY = this.mouse.y + touchOffsetY;
       this.hand.x += (this.hand.targetX - this.hand.x) * Math.min(1, dt * 25);
       this.hand.y += (this.hand.targetY - this.hand.y) * Math.min(1, dt * 25);
 
@@ -943,20 +1086,21 @@
           if (dog.targetChild) {
             const angle = Math.atan2(dog.targetChild.y - dog.y, dog.targetChild.x - dog.x);
             dog.facingAngle = angle;
-            // Move with randomized speed!
-            dog.x += Math.cos(angle) * dog.speed * dt;
-            dog.y += Math.sin(angle) * dog.speed * dt;
+            // Move with randomized speed scaled by speedScale for balanced play on all screens!
+            const effectiveSpeed = dog.speed * this.speedScale;
+            dog.x += Math.cos(angle) * effectiveSpeed * dt;
+            dog.y += Math.sin(angle) * effectiveSpeed * dt;
 
             // Dust trail behind fast dogs
             if (dog.speedType === 'fast' && Math.random() < 0.35) {
               this.particles.push({
-                x: dog.x - Math.cos(dog.facingAngle) * dog.breed.size * 0.7,
-                y: dog.y - Math.sin(dog.facingAngle) * dog.breed.size * 0.7,
+                x: dog.x - Math.cos(dog.facingAngle) * dog.breed.size * 0.7 * this.baseScale,
+                y: dog.y - Math.sin(dog.facingAngle) * dog.breed.size * 0.7 * this.baseScale,
                 vx: (Math.random() - 0.5) * 20,
                 vy: (Math.random() - 0.5) * 20,
                 life: 0.3,
                 maxLife: 0.3,
-                size: 2.5 + Math.random() * 2,
+                size: (2.5 + Math.random() * 2) * this.baseScale,
                 color: 'rgba(255, 255, 255, 0.65)'
               });
             }
@@ -966,26 +1110,26 @@
             if (dog.barkCooldown <= 0) {
               dog.barkCooldown = 0.5 + Math.random() * 0.4;
               this.sound.playBark(dog.breed.pitch * 1.2);
-              this.addFloatingText('GRRR WOOF!', dog.x, dog.y - 18, '#ff1744');
+              this.addFloatingText('GRRR WOOF!', dog.x, dog.y - 18 * this.baseScale, '#ff1744');
             }
 
-            // Check bite collision with child (< 22px)
+            // Check bite collision with child (scaled by baseScale)
             const biteDist = Math.hypot(dog.targetChild.x - dog.x, dog.targetChild.y - dog.y);
-            if (biteDist < 22) {
+            if (biteDist < 24 * this.baseScale) {
               // BITE EVENT!
               this.childBitten(dog.targetChild, dog);
               dog.targetChild = null; // Look for next child
             }
           } else {
             // No uninjured children left? Wander randomly
-            dog.x += Math.cos(dog.facingAngle) * (dog.speed * 0.3) * dt;
-            dog.y += Math.sin(dog.facingAngle) * (dog.speed * 0.3) * dt;
+            dog.x += Math.cos(dog.facingAngle) * (dog.speed * 0.3 * this.speedScale) * dt;
+            dog.y += Math.sin(dog.facingAngle) * (dog.speed * 0.3 * this.speedScale) * dt;
           }
 
         } else if (dog.state === 'GRABBED') {
           // Follow giant hand directly
           dog.x = this.hand.x;
-          dog.y = this.hand.y + 12;
+          dog.y = this.hand.y + 12 * this.baseScale;
           dog.kickAnim += dt * 18;
         }
       }
@@ -1000,7 +1144,7 @@
         for (const dog of this.dogs) {
           if (dog.state === 'CHARGING') {
             const dist = Math.hypot(child.x - dog.x, child.y - dog.y);
-            if (dist < 170) {
+            if (dist < 165 * this.baseScale) {
               threatened = true;
               threatDog = dog;
               break;
@@ -1013,13 +1157,13 @@
           if (!child.isPanicking) {
             child.isPanicking = true;
             this.sound.playGasp();
-            this.addFloatingText('EEEEK! 😱', child.x, child.y - 20, '#ff9800');
+            this.addFloatingText('EEEEK! 😱', child.x, child.y - 20 * this.baseScale, '#ff9800');
           }
 
           const runAngle = Math.atan2(child.y - threatDog.y, child.x - threatDog.x);
           child.facingAngle = runAngle;
-          child.x += Math.cos(runAngle) * 75 * dt;
-          child.y += Math.sin(runAngle) * 75 * dt;
+          child.x += Math.cos(runAngle) * 75 * this.speedScale * dt;
+          child.y += Math.sin(runAngle) * 75 * this.speedScale * dt;
 
         } else {
           // Normal idle wandering
@@ -1029,7 +1173,7 @@
             child.wanderTimer = 2.0 + Math.random() * 4.0;
             const distToCage = Math.hypot(child.x - this.cage.x, child.y - this.cage.y);
             // Move away if too close to cage
-            if (distToCage < this.cage.radius + 70) {
+            if (distToCage < this.cage.radius + 60 * this.baseScale) {
               const pushAngle = Math.atan2(child.y - this.cage.y, child.x - this.cage.x);
               child.facingAngle = pushAngle;
             } else {
@@ -1037,8 +1181,8 @@
             }
           }
 
-          child.x += Math.cos(child.facingAngle) * child.speed * 0.4 * dt;
-          child.y += Math.sin(child.facingAngle) * child.speed * 0.4 * dt;
+          child.x += Math.cos(child.facingAngle) * child.speed * 0.4 * this.speedScale * dt;
+          child.y += Math.sin(child.facingAngle) * child.speed * 0.4 * this.speedScale * dt;
         }
 
         // Keep children in bounds
@@ -1334,10 +1478,11 @@
           ctx.stroke();
 
           // Tension Meter Pill above post
-          const barW = 34;
-          const barH = 5;
+          const scale = this.baseScale || 1;
+          const barW = 34 * scale;
+          const barH = 5 * scale;
           const barX = dog.x - barW / 2;
-          const barY = dog.y - 28;
+          const barY = dog.y - 28 * scale;
 
           ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
           ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
@@ -1352,6 +1497,9 @@
       for (const child of this.children) {
         ctx.save();
         ctx.translate(child.x, child.y);
+        if (this.baseScale && this.baseScale !== 1) {
+          ctx.scale(this.baseScale, this.baseScale);
+        }
 
         // Shadow
         ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
@@ -1436,9 +1584,13 @@
     }
 
     drawDogs(ctx) {
+      const scale = this.baseScale || 1;
       for (const dog of this.dogs) {
         ctx.save();
         ctx.translate(dog.x, dog.y);
+        if (scale !== 1) {
+          ctx.scale(scale, scale);
+        }
 
         // Dog Shadow
         ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
@@ -1497,8 +1649,8 @@
         // If charging, draw red threat line to child
         if (dog.state === 'CHARGING' && dog.targetChild) {
           ctx.strokeStyle = 'rgba(244, 67, 54, 0.4)';
-          ctx.lineWidth = 2;
-          ctx.setLineDash([6, 6]);
+          ctx.lineWidth = 2 * scale;
+          ctx.setLineDash([6 * scale, 6 * scale]);
           ctx.beginPath();
           ctx.moveTo(dog.x, dog.y);
           ctx.lineTo(dog.targetChild.x, dog.targetChild.y);
@@ -1509,17 +1661,19 @@
         // Speed tag above charging dog (Fast, Slow, Medium)
         if (dog.state === 'CHARGING') {
           ctx.save();
-          ctx.font = 'bold 11px "Segoe UI", sans-serif';
+          const fontSize = Math.max(10, Math.round(11 * scale));
+          ctx.font = `bold ${fontSize}px "Segoe UI", sans-serif`;
           ctx.textAlign = 'center';
+          const tagOffset = (dog.breed.size + 8) * scale;
           if (dog.speedType === 'fast') {
             ctx.fillStyle = '#d50000';
-            ctx.fillText(`⚡ FAST (${dog.speed})`, dog.x, dog.y - dog.breed.size - 6);
+            ctx.fillText(`⚡ FAST (${dog.speed})`, dog.x, dog.y - tagOffset);
           } else if (dog.speedType === 'slow') {
             ctx.fillStyle = '#0288d1';
-            ctx.fillText(`🐢 SLOW (${dog.speed})`, dog.x, dog.y - dog.breed.size - 6);
+            ctx.fillText(`🐢 SLOW (${dog.speed})`, dog.x, dog.y - tagOffset);
           } else {
             ctx.fillStyle = '#e65100';
-            ctx.fillText(`🏃 MED (${dog.speed})`, dog.x, dog.y - dog.breed.size - 6);
+            ctx.fillText(`🏃 MED (${dog.speed})`, dog.x, dog.y - tagOffset);
           }
           ctx.restore();
         }
@@ -1527,29 +1681,32 @@
         // Grab Target Indicator: when hand hovers over an eligible broken-out dog
         if (dog.state === 'CHARGING') {
           const dHand = Math.hypot(dog.x - this.hand.x, dog.y - this.hand.y);
-          if (dHand < 52 && !this.hand.isGrabbing) {
+          const grabRadius = this.effectiveGrabDist || 52;
+          if (dHand < grabRadius && !this.hand.isGrabbing) {
             ctx.save();
             ctx.strokeStyle = '#4caf50';
-            ctx.lineWidth = 2.5;
+            ctx.lineWidth = 2.5 * scale;
             ctx.beginPath();
-            ctx.arc(dog.x, dog.y, dog.breed.size + 10, 0, Math.PI * 2);
+            ctx.arc(dog.x, dog.y, (dog.breed.size + 10) * scale, 0, Math.PI * 2);
             ctx.stroke();
-            // Target corners
+            // Target text
             ctx.fillStyle = '#4caf50';
-            ctx.font = 'bold 12px "Segoe UI", sans-serif';
+            const fontSize = Math.max(10, Math.round(12 * scale));
+            ctx.font = `bold ${fontSize}px "Segoe UI", sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText('GRAB! ✋', dog.x, dog.y - dog.breed.size - 14);
+            ctx.fillText('GRAB! ✋', dog.x, dog.y - (dog.breed.size + 14) * scale);
             ctx.restore();
           }
         } else if (dog.state === 'TETHERED') {
           // Hover over tethered dog shows locked status
           const dHand = Math.hypot(dog.x - this.hand.x, dog.y - this.hand.y);
-          if (dHand < 40 && !this.hand.isGrabbing) {
+          if (dHand < 40 * scale && !this.hand.isGrabbing) {
             ctx.save();
             ctx.fillStyle = 'rgba(255, 193, 7, 0.9)';
-            ctx.font = '14px sans-serif';
+            const fontSize = Math.max(12, Math.round(14 * scale));
+            ctx.font = `${fontSize}px sans-serif`;
             ctx.textAlign = 'center';
-            ctx.fillText('🔒', dog.x, dog.y - dog.breed.size - 8);
+            ctx.fillText('🔒', dog.x, dog.y - (dog.breed.size + 8) * scale);
             ctx.restore();
           }
         }
@@ -1560,12 +1717,13 @@
       const hx = this.hand.x;
       const hy = this.hand.y;
       const isGrabbing = this.hand.isGrabbing;
+      const scale = this.baseScale || 1;
 
       // 1. Hand Drop Shadow (Changes size & position with altitude)
       ctx.save();
       ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
-      const shadowY = hy + (isGrabbing ? 20 : 35);
-      const shadowScale = isGrabbing ? 0.85 : 1.1;
+      const shadowY = hy + (isGrabbing ? 20 : 35) * scale;
+      const shadowScale = (isGrabbing ? 0.85 : 1.1) * scale;
       ctx.beginPath();
       ctx.ellipse(hx, shadowY, 32 * shadowScale, 18 * shadowScale, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -1574,6 +1732,9 @@
       // 2. Giant Hand Drawing (Whimsical Cartoon Glove)
       ctx.save();
       ctx.translate(hx, hy);
+      if (scale !== 1) {
+        ctx.scale(scale, scale);
+      }
 
       if (isGrabbing) {
         // Clenched Grasping Glove
