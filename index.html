@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Park Patrol: Giant Hand (公园保卫战：巨手降临)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-wrapper">
+    <!-- Interactive Game Canvas -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- HUD Overlay -->
+    <div id="hud-overlay">
+      <!-- Top Status Cards -->
+      <div class="top-bar">
+        <!-- Shift Timer Card -->
+        <div class="hud-card">
+          <div class="timer-container">
+            <span class="timer-icon">⏱️</span>
+            <div class="timer-text-group">
+              <span class="timer-label">Park Shift Remaining</span>
+              <span class="timer-value" id="timer-val">10:00</span>
+              <span class="phase-tag" id="phase-tag">Phase 1: Morning Calm</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Injured Children Tracker Card -->
+        <div class="hud-card">
+          <div class="injured-container">
+            <div class="injured-text-group">
+              <span class="injured-label">Child Safety Protection</span>
+              <span class="injured-status-text" id="injured-status">0 / 5 Injured</span>
+            </div>
+            <div class="hearts-row">
+              <div class="heart-slot">💚</div>
+              <div class="heart-slot">💚</div>
+              <div class="heart-slot">💚</div>
+              <div class="heart-slot">💚</div>
+              <div class="heart-slot">💚</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Centered How to Play Notice (Displays for 10 seconds at start) -->
+      <div id="center-tip-banner" class="center-tip-card">
+        <div class="tip-badge">✋ HOW TO PLAY</div>
+        <p class="tip-main-text">
+          Dogs <strong>cannot be moved</strong> while tied in the cage.<br>
+          Only when a dog <strong>breaks through the cage</strong> can the Giant Hand seize it and drag it back to re-tie!
+        </p>
+        <div class="tip-sub-text">
+          🎯 <strong>Goal:</strong> Keep injured children &lt; 5 for 10 minutes!
+        </div>
+        <div class="tip-timer-wrapper">
+          <span class="tip-countdown-text" id="tip-countdown-text">Notice closes in 10s</span>
+          <div class="tip-progress-track">
+            <div id="tip-progress-bar" class="tip-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Bar Controls -->
+      <div class="bottom-bar">
+        <!-- Action Buttons -->
+        <div class="control-group">
+          <button id="pause-btn" class="btn" title="Pause Game (Spacebar / P)">⏸️ Pause</button>
+          <button id="sound-btn" class="btn" title="Toggle Sound">🔊 Sound: On</button>
+        </div>
+
+        <!-- Simulation Speed Multiplier (For convenient gameplay & testing) -->
+        <div class="control-group">
+          <div class="speed-btn-group" title="Adjust simulation speed for testing">
+            <button class="speed-opt active" data-speed="1">1x Real</button>
+            <button class="speed-opt" data-speed="2">2x Fast</button>
+            <button class="speed-opt" data-speed="5">5x Turbo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Start / Tutorial Modal -->
+    <div id="start-modal" class="modal-overlay">
+      <div class="modal-dialog">
+        <div class="modal-header-icon">🐕 ⛲ 👧</div>
+        <h1 class="modal-title">Park Patrol: Giant Hand</h1>
+        <p class="modal-subtitle">
+          The dogs in the park cage are pulling violently on their ropes, barking <em>"Woof woof woof!"</em> Ropes snap every 20–60 seconds!
+        </p>
+
+        <div class="rules-grid">
+          <div class="rule-item">
+            <div class="rule-icon">✋</div>
+            <div class="rule-text">
+              <strong>Giant Hand Controls</strong>
+              <p>Move your hand with your mouse or touch. Click & hold to snatch loose dogs mid-sprint.</p>
+            </div>
+          </div>
+          <div class="rule-item">
+            <div class="rule-icon">🪢</div>
+            <div class="rule-text">
+              <strong>Retethering</strong>
+              <p>Drag dogs back into the central cage and release to tie them up with fresh ropes.</p>
+            </div>
+          </div>
+          <div class="rule-item">
+            <div class="rule-icon">⏱️</div>
+            <div class="rule-text">
+              <strong>10-Minute Shift</strong>
+              <p>Survive the full 10-minute shift (600s) as pack tension escalates over time.</p>
+            </div>
+          </div>
+          <div class="rule-item">
+            <div class="rule-icon">🛡️</div>
+            <div class="rule-text">
+              <strong>Protect Children (&lt; 5 Bites)</strong>
+              <p>If 5 children get bitten, the park shuts down! Keep injuries strictly below 5.</p>
+            </div>
+          </div>
+          <div class="rule-item" style="grid-column: span 2;">
+            <div class="rule-icon">⚡</div>
+            <div class="rule-text">
+              <strong>Random Dog Speed (Fast & Slow)</strong>
+              <p>Each dog's speed is completely randomized! Some bolt across the lawn with ⚡ high speed, while others are 🐢 slow waddlers.</p>
+            </div>
+          </div>
+        </div>
+
+        <button id="start-btn" class="btn-primary">
+          <span>Start Park Shift (10 Min)</span> 🚀
+        </button>
+      </div>
+    </div>
+
+    <!-- Pause Modal -->
+    <div id="pause-modal" class="modal-overlay hidden">
+      <div class="modal-dialog">
+        <div class="modal-header-icon">⏸️</div>
+        <h2 class="modal-title">Shift Paused</h2>
+        <p class="modal-subtitle">Take a breather! The children and barking dogs are waiting for your giant hand.</p>
+        <button id="resume-btn" class="btn-primary">
+          <span>Resume Playing</span> ▶️
+        </button>
+      </div>
+    </div>
+
+    <!-- Game Over Modal (Defeat: 5 Injuries) -->
+    <div id="game-over-modal" class="modal-overlay hidden">
+      <div class="modal-dialog">
+        <div class="modal-header-icon">🚨</div>
+        <h2 class="modal-title" style="color: #c62828;">Park Evacuated!</h2>
+        <p class="modal-subtitle">
+          Too many children were injured (5 / 5)! The park has been closed for medical safety.
+        </p>
+
+        <div class="stats-card">
+          <div class="stat-box">
+            <span class="stat-num" id="go-time">0:00</span>
+            <span class="stat-label">Shift Survived</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="go-dogs">0</span>
+            <span class="stat-label">Dogs Retethered</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="go-snapped">0</span>
+            <span class="stat-label">Ropes Snapped</span>
+          </div>
+        </div>
+
+        <button id="retry-btn" class="btn-primary" style="background: linear-gradient(135deg, #e53935, #c62828);">
+          <span>Try Shift Again</span> 🔄
+        </button>
+      </div>
+    </div>
+
+    <!-- Victory Modal (Level Cleared: 10:00 Reached with < 5 Injuries) -->
+    <div id="victory-modal" class="modal-overlay hidden">
+      <div class="modal-dialog">
+        <div class="modal-header-icon">🎉 🏆 🌟</div>
+        <h2 class="modal-title" style="color: #2e7d32;">Shift Complete! Level Cleared!</h2>
+        <p class="modal-subtitle">
+          Incredible work! You successfully guarded the park children for the full 10-minute shift!
+        </p>
+
+        <div class="stars-container" id="vic-stars">⭐⭐⭐</div>
+
+        <div class="stats-card">
+          <div class="stat-box">
+            <span class="stat-num" id="vic-time">10:00</span>
+            <span class="stat-label">Total Time</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="vic-dogs">0</span>
+            <span class="stat-label">Dogs Caught</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-num" id="vic-injured">0 / 5</span>
+            <span class="stat-label">Injuries Avoided</span>
+          </div>
+        </div>
+
+        <button id="play-again-btn" class="btn-primary">
+          <span>Play Again</span> 🌟
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
