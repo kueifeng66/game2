@@ -1,5 +1,5 @@
 /**
- * Park Patrol: Giant Hand (公园保卫战：巨手降临)
+ * Park Patrol: Giant Hand (公園保衛戰：巨手降臨)
  * Core Game Engine & Logic
  */
 
@@ -378,6 +378,7 @@
         playAgainBtn: document.getElementById('play-again-btn'),
         pauseBtn: document.getElementById('pause-btn'),
         soundBtn: document.getElementById('sound-btn'),
+        fullscreenBtn: document.getElementById('fullscreen-btn'),
         speedOpts: document.querySelectorAll('.speed-opt'),
         // Center Tip Notice
         centerTipBanner: document.getElementById('center-tip-banner'),
@@ -404,10 +405,28 @@
     }
 
     resize() {
-      // 1. Auto-detect screen & viewport metrics
-      const vv = window.visualViewport;
-      this.width = vv ? Math.round(vv.width) : window.innerWidth;
-      this.height = vv ? Math.round(vv.height) : window.innerHeight;
+      const oldWidth = this.width || window.innerWidth;
+      const oldHeight = this.height || window.innerHeight;
+      const oldCageX = (this.cage && this.cage.x !== undefined) ? this.cage.x : oldWidth / 2;
+      const oldCageY = (this.cage && this.cage.y !== undefined) ? this.cage.y : oldHeight / 2;
+
+      // 1. Auto-detect screen & viewport metrics (Full Screen, VisualViewport, Desktop window)
+      const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+
+      let w = window.innerWidth;
+      let h = window.innerHeight;
+
+      if (isFs && fsEl) {
+        w = fsEl.clientWidth || window.innerWidth;
+        h = fsEl.clientHeight || window.innerHeight;
+      } else if (window.visualViewport) {
+        w = Math.round(window.visualViewport.width);
+        h = Math.round(window.visualViewport.height);
+      }
+
+      this.width = (w && w > 0) ? w : (window.innerWidth || 800);
+      this.height = (h && h > 0) ? h : (window.innerHeight || 600);
       this.isPortrait = this.height > this.width;
       this.isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 
@@ -432,6 +451,8 @@
 
       this.canvas.width = Math.round(this.width * this.dpr);
       this.canvas.height = Math.round(this.height * this.dpr);
+      this.canvas.style.width = `${this.width}px`;
+      this.canvas.style.height = `${this.height}px`;
 
       // Reset transform then apply scale
       this.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -470,20 +491,116 @@
 
       this.rebuildPosts();
 
-      // Clamp children and dogs within visible screen bounds
+      const scaleX = (oldWidth > 0) ? (this.width / oldWidth) : 1;
+      const scaleY = (oldHeight > 0) ? (this.height / oldHeight) : 1;
+      const cageDeltaX = this.cage.x - oldCageX;
+      const cageDeltaY = this.cage.y - oldCageY;
+
+      // 7. Synchronize DOGS with Cage & Posts
+      if (this.dogs && this.dogs.length > 0) {
+        for (let i = 0; i < this.dogs.length; i++) {
+          const dog = this.dogs[i];
+          const postIdx = (dog.postIndex !== undefined && dog.postIndex >= 0 && dog.postIndex < this.cage.posts.length)
+            ? dog.postIndex
+            : (i % this.cage.posts.length);
+          dog.postIndex = postIdx;
+          const post = this.cage.posts[postIdx];
+
+          // Ensure anchor post coordinates always point to the new post position in the cage!
+          dog.postX = post.x;
+          dog.postY = post.y;
+          dog.facingAngle = post.angle;
+
+          if (dog.state === 'TETHERED') {
+            post.occupiedDog = dog;
+            // Position the dog cleanly inside the cage tied to its post
+            const tugDist = 8 + Math.sin(dog.strainPhase || 0) * 6;
+            dog.x = dog.postX + Math.cos(dog.facingAngle) * tugDist;
+            dog.y = dog.postY + Math.sin(dog.facingAngle) * tugDist;
+            dog.vx = 0;
+            dog.vy = 0;
+          } else if (dog.state === 'CHARGING') {
+            post.occupiedDog = null;
+            // Scale roaming position relative to the cage
+            if (scaleX !== 1 || scaleY !== 1 || cageDeltaX !== 0 || cageDeltaY !== 0) {
+              const relX = dog.x - oldCageX;
+              const relY = dog.y - oldCageY;
+              dog.x = this.cage.x + relX * scaleX;
+              dog.y = this.cage.y + relY * scaleY;
+            }
+            // Keep charging dog outside the cage
+            const distToCage = Math.hypot(dog.x - this.cage.x, dog.y - this.cage.y);
+            if (distToCage < this.cage.radius + 15) {
+              const pushAngle = Math.atan2(dog.y - this.cage.y, dog.x - this.cage.x) || (dog.facingAngle || 0);
+              dog.x = this.cage.x + Math.cos(pushAngle) * (this.cage.radius + 20);
+              dog.y = this.cage.y + Math.sin(pushAngle) * (this.cage.radius + 20);
+            }
+            dog.x = Math.max(20, Math.min(this.width - 20, dog.x));
+            dog.y = Math.max(20, Math.min(this.height - 20, dog.y));
+          } else if (dog.state === 'GRABBED') {
+            post.occupiedDog = null;
+            dog.x = this.hand.x;
+            dog.y = this.hand.y + 12 * this.baseScale;
+          }
+        }
+      }
+
+      // 8. Synchronize CHILDREN across full screen
       if (this.children && this.children.length > 0) {
         for (const child of this.children) {
+          if (scaleX !== 1 || scaleY !== 1) {
+            child.x *= scaleX;
+            child.y *= scaleY;
+            child.targetX *= scaleX;
+            child.targetY *= scaleY;
+          }
+          // Prevent children from spawning/landing inside the cage
+          const distToCage = Math.hypot(child.x - this.cage.x, child.y - this.cage.y);
+          if (distToCage < this.cage.radius + 50 * this.baseScale) {
+            const pushAngle = Math.atan2(child.y - this.cage.y, child.x - this.cage.x) || (child.id * 0.5);
+            child.x = this.cage.x + Math.cos(pushAngle) * (this.cage.radius + 60 * this.baseScale);
+            child.y = this.cage.y + Math.sin(pushAngle) * (this.cage.radius + 60 * this.baseScale);
+          }
           child.x = Math.max(30, Math.min(this.width - 30, child.x));
           child.y = Math.max(30, Math.min(this.height - 30, child.y));
         }
       }
-      if (this.dogs && this.dogs.length > 0) {
-        for (const dog of this.dogs) {
-          if (dog.state === 'CHARGING') {
-            dog.x = Math.max(20, Math.min(this.width - 20, dog.x));
-            dog.y = Math.max(20, Math.min(this.height - 20, dog.y));
+
+      // 9. Synchronize Trees along the borders of the park
+      if (this.trees && this.trees.length > 0) {
+        for (const tree of this.trees) {
+          if (tree.side === 0) {
+            tree.x = (tree.ratio !== undefined ? tree.ratio : (tree.x / oldWidth)) * this.width;
+            tree.y = tree.margin !== undefined ? tree.margin : Math.min(tree.y, 80);
+          } else if (tree.side === 1) {
+            tree.x = (tree.ratio !== undefined ? tree.ratio : (tree.x / oldWidth)) * this.width;
+            tree.y = this.height - (tree.margin !== undefined ? tree.margin : (oldHeight - tree.y));
+          } else if (tree.side === 2) {
+            tree.x = tree.margin !== undefined ? tree.margin : Math.min(tree.x, 80);
+            tree.y = (tree.ratio !== undefined ? tree.ratio : (tree.y / oldHeight)) * this.height;
+          } else if (tree.side === 3) {
+            tree.x = this.width - (tree.margin !== undefined ? tree.margin : (oldWidth - tree.x));
+            tree.y = (tree.ratio !== undefined ? tree.ratio : (tree.y / oldHeight)) * this.height;
+          } else {
+            tree.x *= scaleX;
+            tree.y *= scaleY;
           }
         }
+      }
+
+      // 10. Synchronize Giant Hand and Cursor
+      if (scaleX !== 1 || scaleY !== 1) {
+        this.hand.x = Math.max(20, Math.min(this.width - 20, this.hand.x * scaleX));
+        this.hand.y = Math.max(20, Math.min(this.height - 20, this.hand.y * scaleY));
+        this.hand.targetX = this.hand.x;
+        this.hand.targetY = this.hand.y;
+        this.mouse.x = this.hand.x;
+        this.mouse.y = this.hand.y;
+      }
+
+      // 11. Immediate redraw so paused/start states reflect layout instantly
+      if (this.ctx) {
+        this.render();
       }
     }
 
@@ -598,17 +715,30 @@
       this.trees = [];
       const treeCount = 18;
       for (let i = 0; i < treeCount; i++) {
-        const margin = 50;
-        let tx, ty;
         const side = Math.floor(Math.random() * 4);
-        if (side === 0) { tx = Math.random() * this.width; ty = margin + Math.random() * 50; }
-        else if (side === 1) { tx = Math.random() * this.width; ty = this.height - margin - Math.random() * 50; }
-        else if (side === 2) { tx = margin + Math.random() * 50; ty = Math.random() * this.height; }
-        else { tx = this.width - margin - Math.random() * 50; ty = Math.random() * this.height; }
+        const ratio = 0.05 + Math.random() * 0.90;
+        const margin = 40 + Math.random() * 40;
+        let tx, ty;
+        if (side === 0) {
+          tx = ratio * this.width;
+          ty = margin;
+        } else if (side === 1) {
+          tx = ratio * this.width;
+          ty = this.height - margin;
+        } else if (side === 2) {
+          tx = margin;
+          ty = ratio * this.height;
+        } else {
+          tx = this.width - margin;
+          ty = ratio * this.height;
+        }
 
         this.trees.push({
           x: tx,
           y: ty,
+          side: side,
+          ratio: ratio,
+          margin: margin,
           radius: 26 + Math.random() * 16,
           isBlossom: Math.random() > 0.6,
           swayOffset: Math.random() * Math.PI * 2
@@ -617,14 +747,42 @@
     }
 
     setupEvents() {
-      // Screen resizing & orientation change listeners for iPhone & mobile
-      window.addEventListener('resize', () => this.resize());
+      const onResize = () => {
+        this.resize();
+        this.render();
+      };
+
+      // Screen resizing & orientation change listeners for desktop fullscreen, iPhone & mobile
+      window.addEventListener('resize', onResize);
       if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', () => this.resize());
+        window.visualViewport.addEventListener('resize', onResize);
       }
       window.addEventListener('orientationchange', () => {
-        setTimeout(() => this.resize(), 120);
+        onResize();
+        setTimeout(onResize, 120);
+        setTimeout(onResize, 350);
       });
+
+      const onFsChange = () => {
+        this.updateFullscreenBtn();
+        onResize();
+        requestAnimationFrame(onResize);
+        setTimeout(onResize, 100);
+        setTimeout(onResize, 350);
+      };
+
+      document.addEventListener('fullscreenchange', onFsChange);
+      document.addEventListener('webkitfullscreenchange', onFsChange);
+      document.addEventListener('mozfullscreenchange', onFsChange);
+      document.addEventListener('MSFullscreenChange', onFsChange);
+
+      if (window.ResizeObserver) {
+        const ro = new ResizeObserver(() => {
+          onResize();
+        });
+        const wrapper = document.getElementById('game-wrapper');
+        if (wrapper) ro.observe(wrapper);
+      }
 
       // Unified Pointer & Touch coordinate resolver
       const getPos = (e) => {
@@ -642,9 +800,14 @@
 
         const isTouch = e.pointerType === 'touch' || Boolean(e.touches || e.changedTouches);
 
+        const rawX = (clientX !== undefined ? clientX : this.mouse.x) - rect.left;
+        const rawY = (clientY !== undefined ? clientY : this.mouse.y) - rect.top;
+        const scaleX = rect.width > 0 ? (this.width / rect.width) : 1;
+        const scaleY = rect.height > 0 ? (this.height / rect.height) : 1;
+
         return {
-          x: (clientX !== undefined ? clientX : this.mouse.x) - rect.left,
-          y: (clientY !== undefined ? clientY : this.mouse.y) - rect.top,
+          x: rawX * scaleX,
+          y: rawY * scaleY,
           isTouch
         };
       };
@@ -769,6 +932,8 @@
         this.ui.soundBtn.innerHTML = this.sound.muted ? '🔇 Sound: Off' : '🔊 Sound: On';
       });
 
+      bindBtn(this.ui.fullscreenBtn, () => this.toggleFullscreen());
+
       // Speed selection
       this.ui.speedOpts.forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -782,8 +947,50 @@
       window.addEventListener('keydown', (e) => {
         if (e.key === ' ' || e.key === 'p' || e.key === 'P') {
           this.togglePause();
+        } else if (e.key === 'f' || e.key === 'F') {
+          this.toggleFullscreen();
         }
       });
+    }
+
+    toggleFullscreen() {
+      const doc = document;
+      const isFs = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement || doc.mozFullScreenElement || doc.msFullscreenElement);
+      if (!isFs) {
+        const root = document.documentElement;
+        if (root.requestFullscreen) {
+          root.requestFullscreen().catch(() => {});
+        } else if (root.webkitRequestFullscreen) {
+          root.webkitRequestFullscreen().catch(() => {});
+        } else if (root.mozRequestFullScreen) {
+          root.mozRequestFullScreen().catch(() => {});
+        } else if (root.msRequestFullscreen) {
+          root.msRequestFullscreen().catch(() => {});
+        }
+      } else {
+        if (doc.exitFullscreen) {
+          doc.exitFullscreen().catch(() => {});
+        } else if (doc.webkitExitFullscreen) {
+          doc.webkitExitFullscreen().catch(() => {});
+        } else if (doc.mozCancelFullScreen) {
+          doc.mozCancelFullScreen().catch(() => {});
+        } else if (doc.msExitFullscreen) {
+          doc.msExitFullscreen().catch(() => {});
+        }
+      }
+    }
+
+    updateFullscreenBtn() {
+      if (!this.ui.fullscreenBtn) return;
+      const isFs = Boolean(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+      const label = this.ui.fullscreenBtn.querySelector('.fs-text');
+      const icon = this.ui.fullscreenBtn.querySelector('.fs-icon');
+      if (label && icon) {
+        icon.textContent = isFs ? '🗗' : '⛶';
+        label.textContent = isFs ? 'Exit Full' : 'Fullscreen';
+      } else {
+        this.ui.fullscreenBtn.innerHTML = isFs ? '🗗 Exit Full' : '⛶ Fullscreen';
+      }
     }
 
     startGame() {
@@ -878,12 +1085,32 @@
       dog.state = 'TETHERED';
       this.dogsCaught++;
 
-      // Assign to closest post or original post
-      let nearestPost = this.cage.posts[dog.postIndex];
-      dog.x = nearestPost.x;
-      dog.y = nearestPost.y;
-      dog.postX = nearestPost.x;
-      dog.postY = nearestPost.y;
+      // Find the closest post in the cage
+      let chosenPost = null;
+      let minD = Infinity;
+      for (let i = 0; i < this.cage.posts.length; i++) {
+        const post = this.cage.posts[i];
+        const d = Math.hypot(post.x - dog.x, post.y - dog.y);
+        const penalty = (post.occupiedDog && post.occupiedDog !== dog) ? 500 : 0;
+        if (d + penalty < minD) {
+          minD = d + penalty;
+          chosenPost = post;
+          dog.postIndex = i;
+        }
+      }
+      if (!chosenPost) {
+        dog.postIndex = (dog.postIndex !== undefined && dog.postIndex >= 0 && dog.postIndex < this.cage.posts.length)
+          ? dog.postIndex
+          : 0;
+        chosenPost = this.cage.posts[dog.postIndex];
+      }
+
+      chosenPost.occupiedDog = dog;
+      dog.x = chosenPost.x;
+      dog.y = chosenPost.y;
+      dog.postX = chosenPost.x;
+      dog.postY = chosenPost.y;
+      dog.facingAngle = chosenPost.angle;
 
       // New randomized endurance timer (20s - 60s)
       const newTimer = dog.breed.minRope + Math.random() * (dog.breed.maxRope - dog.breed.minRope);
@@ -897,7 +1124,7 @@
       dog.speedType = speedData.speedType;
 
       this.sound.playTie();
-      this.addFloatingText('Tied & Secured! 🪢', dog.x, dog.y - 25, '#ffb300');
+      this.addFloatingText('Tied & Secured! 🪢', dog.x, dog.y - 25 * (this.baseScale || 1), '#ffb300');
       this.createBurst(dog.x, dog.y, 14, '#ffd54f');
     }
 
