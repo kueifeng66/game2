@@ -54,6 +54,17 @@ body, html {
   user-select: none;
 }
 
+#game-wrapper:fullscreen,
+#game-wrapper:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  background: #3f7d45;
+}
+
+:fullscreen, :-webkit-full-screen {
+  background-color: #1b2e1c;
+}
+
 canvas#game-canvas {
   display: block;
   width: 100%;
@@ -717,3 +728,15 @@ canvas#game-canvas {
     margin-bottom: 8px;
   }
 }
+
+#game-wrapper:fullscreen .modal-overlay,
+#game-wrapper:-webkit-full-screen .modal-overlay {
+  position: absolute;
+}
+
+@media (max-width: 480px) {
+  #fullscreen-btn .fs-text {
+    display: none;
+  }
+}
+
